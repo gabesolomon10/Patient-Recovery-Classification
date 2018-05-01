@@ -1,0 +1,589 @@
+---
+title: "Predicting Readmission Probability for Diabetes Inpatients"
+author: "Gabriel Solomon"
+date: "November 19th, 2017"
+output:
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    toc: no
+    fig_width: 10
+    fig_height: 5
+    
+  pdf_document:
+    toc: no
+    toc_depth: 2
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyfoot[CO,CE]{}
+- \fancyfoot[LE,RO]{\thepage}
+subtitle: STAT 471/571/701, Fall 2017
+graphics: yes
+---
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+  knitr::opts_chunk$set(tidy=TRUE,fig.align='middle', dev = 'pdf', warning=F, message=F)
+  library(MASS)
+  library(lattice)
+  library(contrast)
+  library(leaps)
+  library(ISLR)
+  library(ggplot2)
+  library(glmnet)
+  library(bestglm)
+  library(pROC)
+  library(dplyr)
+  library(ggthemes)
+  library(scales)
+  if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(randomForest, tree, rpart, pROC, partykit)
+  set.seed(1243)
+```
+
+```{r, echo=FALSE}
+diabetic.data <- read.csv("diabetic.data.csv", header=T)
+readmission <- read.csv("readmission.csv", sep = ",", header=T)
+```
+
+```{r, echo=FALSE}
+#Creating variable of interest: Readmitted within 30 days
+readmission$sub30readmit <- ifelse (readmission$readmitted == "<30", c(1),c(0))
+readmission$sub30readmit <- as.factor(readmission$sub30readmit)
+```
+
+```{r, echo=FALSE}
+#Generating New Variables
+readmission$total_hospital_visits <- (readmission$number_inpatient + readmission$number_outpatient + readmission$number_emergency)
+```
+
+# Executive Summary
+
+## Background
+
+Diabetes is a disease that impacts the body's ability to produce or response to change in insulin levels which can lead to elevated glucose levels.  Diabetes is a costly disease, with an estimated total cost of $245 billion in the U.S in 2012, and it is a growing epidemic, now affecting 1 in 11 Americans.  Given the large and growing diabetes epidemic in America, it is important to reasses how healthcare providers, insurers, and hospitals can best serve those with diabetes so that they can lead comfortable, normal lives.  
+
+In this study, we focus on rapid hospital readmissions for diabetes, which can be debilitating for hospitals and patients alike.  In 2012, the Centers for Medicare and Medicaid Services announced that reimbursements will not be given to hospitals for services rendered if a patient was readmitted with diabetes-related health concerns less than 30 days after being discharged.  Additionally, the overhead costs required to constantly admit and re-admit diabetes patients is substantial, and patients often struggle with the impact that hospital readmissions can have on their jobs, families, and communities.  
+
+These factors make the proper identification and prediction of patients at risk for sub-30 day readmission a key goal for hospitals across the country.  In this report, we analyze a large dataset with relevant patient information and readmission data in order to create a model that hospitals across the country can use to predict which patients are at high risk of readmission.  Implementation of this model will allow hospitals to analyze which patients require extra attention or preemptive healthcare treatments.  This model also offers hospitals the opportunity to rigorously examine which factors tend to lead to readmission, and how these factors can be treated in a medically responsible manner.
+
+## Data Summary
+
+The data used in this report comes from the Center for Clinical and Translational Research at Virginia Commonwealth University. It covers data on diabetes patients across 130 U.S. hospitals from 1999 to 2008. There are over 100,000 unique hospital admissions in this dataset, from  around 70,000 unique patients. The data includes demographic elements, such as age, gender, and race, admission and discahrge details, patient medical history, and clinical attributes such as tests conducted, emergency/inpatient visits, and changes in medication. 
+
+All observations have five things in common:
+
+1.	They are all hospital admissions
+2.	Each patient had some form of diabetes
+3.	The patient stayed for between 1 and 14 days.
+4.	The patient had laboratory tests performed on him/her.
+5.	The patient was given some form of medication during the visit.
+
+## Methods and Findings
+
+In this report, we cleaned and processed the VCU data before creating a model used to predict whether or not patients will be readmitted to hospitals for diabetes-related symptoms in under 30 days.  Two model selection techniques were used - elastic net classification and random forest. These models are able to take patient input and spit out a probability that the patient would be readmitted. We generated a total of four candidate models, which were then compared on the basis and accuracy, simplicity, and applicability to hospitals.  After engaging in a thoughtful comparison, a final model was chosen for it's superior accuracy and functionality.  This model, the `Final Model`, is an elastic net model that indicates the key factors in determing a patient's likelihood to be readmitted. They are as follows:
+
+`Time in the Hospital`, `Number of Diagnoses`, `A1C Test Result`, `Metformin`, `Insulin`, `Diabetes Medication Prescription`, `Discharge Location`, `Total Hospital Visits`, and three patient diagnoses, `Diagnosis 1`, `Diagnosis 2`, and `Diagnosis 3`.  These predictors will be explained in more detail throughout the report.
+
+Furthermore, we proposed a final classification rule, whereby hospitals can use the model output to make a final identification of which patients are at risk of readmission.  Understanding the model and implementation of the proposed classification rule can make a dramatic difference in helping patients who need it most, making hospitals more successful more economically and through the lens of health outcomes.
+
+## Limitations
+
+There are several key limitations to note as you consider implementation of the model.  First, the data used does not contain some information which could be valuable in predicting readmissions, such as lifestyle factors, long-term health history, or geographical location.  Thus, it is important to always consider patient context and factors not included in the final model when generating patient assessments.  The data used to generate the model has a subset of variables with little to no variability and/or high missing value counts, which creates uncercainty regarding the importance of the factors included in the model.  Furthermore, the classification rule proposed is based on an educated guess concerning the difference in costs of misdiagnosing patients.  A true empirical grounding for this cost ratio would allow the model to better minimize the excessive costs brought about by rapid hospital readmission.  Finally, the final model includes predictors that affect the model-generated probability of readmission in ways counter to what we logically expect.  This must be accounted for.
+
+\pagebreak
+
+# Data Summary
+
+The data in this report were collected by researched at the Center for Clinical and Translational Research at Virginia Commonwealth University.  The data contains information on hospital-admitted diabetes patients across 130 U.S hospitals from 1996 to 2008.  The data covers over 100,000 unique patients from around 70,000, and contains detailed and valuable information about key factors that distinguish the patient's background and medical condition at the time of admission, which allow for a robust readmission prediction model.
+
+## Patient Identifiers
+
+The dataset contains data on demographic features of the admitted population - age, race, and gender.  The data primarily contains information about Caucasian and African American patients (nearly 80% of the total observations), as shown below:
+
+```{r, echo=FALSE}
+
+ggplot(data = readmission, aes(readmission$race, color=as.factor(sub30readmit))) + geom_bar(alpha = .2) + theme_fivethirtyeight() + labs(title = "Patient Race Distribution", x = "Race", y= "Count")+ guides(colour=guide_legend(title = "Readmissions in Under 30 Days"))
+```
+
+## Admission and Discharge
+The data also contains admission and discharge details for each patient which describes who referred the patient to the hospital (physician vs. emergency department) and the type of admission (Emergency, Elective, or Urgent).  About 57% of patients were sent to the hopital from the emergency department, indicating the data contains a large about of high-risk patients.  Furthermore, 71% of admission were classified as urgent or emergency visits:
+
+```{r, echo=FALSE}
+readmission %>%
+group_by("Referral Type" = adm_src_mod) %>%
+  summarise(
+    "Number of Patients" = n()
+  )
+
+readmission %>%
+group_by("Admission Type" = adm_typ_mod) %>%
+  summarise(
+    "Number of Patients" = n()
+  )
+```
+
+A critical piece of information is location of discharge, as early discharge or incorrect discharge can lead to rapid readmission, which this report looks to predict. A breakdown of discharge location is shown below:
+
+```{r, echo= FALSE}
+ggplot(data = readmission, aes(readmission$disch_disp_modified, color=as.factor(sub30readmit))) + geom_bar(alpha = .2) + scale_color_fivethirtyeight() + theme_fivethirtyeight() + labs(title = "Patient Discharge Distribution") + labs(x = "Type of Discharge", y= "Count") + theme(axis.text.x = element_text(angle = 25, hjust =1)) + guides(colour=guide_legend(title = "Readmissions in Under 30 Days"))
+
+```
+
+Around 60% of patients are discharged to their homes.  This will be a predictor of interest, as thinking strategically about discharge plans can make a large impact on the short- and long-term health outcomes of the patients. 
+
+## Patient Medical History
+
+The data contains information on each patient's hospital visits in the past year grouped into three bins: outpatient visits, inpatient visits, and emergency room visits.  However, this information is distributed unequally - for instance, a
+majority of patients had no outpatient visits in the previous year, but one patient in particular had 42 separate visits, which negative skews the data.  Additionally, the lack of variability in these categories makes them potentially poor predictors of readmission.  To account for this, we generated a new variable, total hospital visits, which combines outpatient, inpatient, and emergency room visits for each patient from the past year.  This increases variability and aggregates across related predictors, making the later model more parsimonious.
+
+## Patient Admission Details
+Each patient record includes robust information about the patient's visit to the hospital.
+
+Each patient was diagnosed with up to three conditions while recieving treatment, categorized by their ICD9 codes (standardized physician codes).  
+
+Each patient record contained information on the length of time patients spent in the hospital.  This data was relatively normally distributed:
+
+```{r, echo=FALSE}
+ggplot(data = readmission, aes(readmission$time_in_hospital, color=as.factor(sub30readmit))) + geom_histogram(bins=6) + theme_fivethirtyeight() + labs(title = "Patient Time in Hospital (Days)") + labs(x = "Length of Stay (Days)", y= "Count") +guides(colour=guide_legend(title = "Readmissions in Under 30 Days"))
+```
+
+Additionally, patient record contain the number of diagnoses entered for each patient, the number of lab procedures performed on the patient, the number of non-lab procedures performed on the paitent, and the number of medications prescribed.  There did not appear to be significant difference between patients readmitted in under 30 days and other patients on the basis of these procedural data.  For example, consider the distrubtion of lab procedures: 
+
+```{r, echo=FALSE}
+ggplot(data= readmission, aes(num_lab_procedures, color=as.factor(sub30readmit))) + geom_histogram(bins = 8) +theme_fivethirtyeight() + labs(title = "Patient Lab Procedure Number Distribution", x = "Number of Lab Procedures", y= "Count") + theme(legend.position = "bottom") +guides(colour=guide_legend(title = "Readmissions in Under 30 Days"))
+```
+
+## Clinical Results
+
+There are two clinical test results that were returned for each patient - the maximum glucose serum test results and the A1C test results.
+
+```{r, echo = FALSE}
+readmission %>%
+group_by("Maximum Glucose Test Result"=max_glu_serum) %>%
+  summarise(
+    "Number of Results" = n()
+  )
+
+readmission %>%
+group_by("A1C Test Result"=A1Cresult) %>%
+  summarise(
+    "Number of Results" = n()
+  )
+```
+
+For a vast majority of patients, neither test was administered (96% of patients did not recieve a glucose serum test, and 84% of patients did not recieve an A1c test).  This is concerning, as any variable with a large number of missing values may be influenced primarily by outliers.  However, I keep these variables in the model, as their significance could indicate a need for hospitals to administer these tests to a wider variety of patients.
+
+## Medication
+
+Medication is another important factor to consider in the dataset, as mistakes in medicine prescription or dosage can lead to rapid readmission, which is extremely costly for hospitals.  Patient records indicate whether or not diabetes medicine was prescribed, and whether or not there was a change in diabetes medication during the visit.  Around 50% of patients saw a change in diabetes medication as a result of hospitalization:
+
+```{r, echo =FALSE}
+readmission %>%
+group_by("Change in Medication" =change) %>%
+  summarise(
+    "Number of Results" = n()
+  )
+```
+
+This change in medication - or lack thereof - figures to be a key indicator of readmission potential.
+
+One point of concern is possible linearity between the "change" and "diabetes medication" variables, as a change in diabetes medication cannot occur if the patient is not prescribed diabetes medicine!  Thus, a "no" response in the diabetes medicine predictor guarantees a "no" in the diabeted medicine change predictor. 
+
+Finally, the data contains information on specific medication changes that may have occurred during the encounter.  There are 8 medications considered in the cleaned dataset.  For more information, see the Appendix.
+
+## Data Concerns
+
+There are various problems with the data as presented, which may be addressed with varying strategies.  The wide bins that group some of the data together, especially the age variable - one bin contains all patients 20-59 - reduces the granularity of the data significantly and may lead to predictions that are not specific enough to each patient to be of use.  Consider the treatment of a 58 year-old with diabetes against a 37 year-old - the physician's approach would likely be quite different, but they are considered in the same age bin for the purposes of the analysis.
+
+
+As mentioned above, there is very low variability in the hospital visit predictors.  To counter this, these variables were aggregated together into a "total hospital visits" variable, with the outpatient, inpatient, and emergency-specific data removed prior to data entry into a prediction model.  There is also low variability in other factors.  This is important to keep in mind as the analysis progress.
+
+A large number of entries, across predictors, are labeled as other - specifically information on race, diagnoses, and hospital admission classification.  More detailed information would be useful in these areas.
+
+Finally, the data provided on the patient diagnoses is broken down into extremely specific ICD9 codes.  However, these codes can be aggregated into bins, such as endocrine diseases, respiratory diseases, etc.  Given more time and a detailed study of the ICD9, these codes could be placed into larger disease group bins.  This would allow for more robust analysis, and a more powerful model.
+
+## Variables Used in the Analysis
+
+In the interest of creating a parsimonious model that predicts patients at risk of readmission in under 30 days, certain variables were eliminated from the inital VCU data.  Encounter id and patient number are specific to each patient entry, and are dropped from the dataset as such.  Number of outpatient, inpatient, and emergency room visits in the past year are dropped and replaced by an aggregate hospital visits variable.  A new variable was generated to  measure whether or not a readmission occurred in under 30 days.  This will allow the model to specifically focus on predicting these individuals, lowering costs for the hospital and the patient alike.  All other variables - demographic data, admission and discharge, medical history, admission, clinical, and medication data - remain.  
+
+We allow our modeling selection techniques to parse through these variables to create a workable model.  In the following section, various model possibilites are considered, and we ultimately choose a model that best mitigates the misclassification of patients who are prematurely discharged and subsequently readmitted in under 30 days.
+	
+# Analyses and Prediction
+
+## Models Considered
+
+In order to generate the best possible model to predict patient readmissision in under 30 days, I considered two different stastical modeling techniques.  The first method used was the elastic net classification method, or "glmnet" which maximizes the likelihood of a binary prediction given the data at hand, with a penalty applied for extra coefficients.  This technique uses a K-Fold Cross Validation to ensure more robust standard errors and mitigate the effect of outlier values.  Since the elastic net method delivers variables that minimize cross-validation error, these variables may not be significant in the final model.  Thus, after the initial elastic net, the outputted variables are placed into a logistic regression and tested for significance.  Only those variables which were found to be significant at the .05 level remained in the model.
+
+Three elastic net models were generated using the aforementioned technique, using alpha levels of 1, .9, and .8 respectively, on pre-assigned training data (4/5 of the available data points).  These models were then applied to the testing data.
+
+```{r, echo = FALSE}
+readmission_forest_data <- subset(readmission, select = -c(encounter_id, patient_nbr, readmitted, number_outpatient, number_inpatient, number_emergency))
+```
+
+```{r, echo = FALSE}
+#Assigning Training/Testing data
+n <- nrow(readmission_forest_data)
+n1 <- (4/5)*n
+
+names(readmission_forest_data)[26] <- "RE"
+train.index <- sample(n, n1,replace=FALSE)
+#length(train.index)
+data.train <- readmission_forest_data[train.index, ]
+data.test <- readmission_forest_data[-train.index, ]
+```
+
+
+```{r, echo = FALSE}
+#Elastic Net Classification
+X <- model.matrix(RE~., data.train)[,-1]
+Y <- data.train[, 26]
+
+fit1.cv <- cv.glmnet(X, Y, alpha=1, family="binomial", nfolds = 10, type.measure = "auc") 
+
+saveRDS(fit1.cv, '/tmp/fit2.cv.rds')
+fit1.cv.saved <- readRDS('/tmp/fit2.cv.rds')
+
+fit1.cv.coef.1se <- coef(fit1.cv, s="lambda.1se")  
+fit1.cv.coef.1se <- fit1.cv.coef.1se[which(fit1.cv.coef.1se !=0),] 
+
+#Plugging into lm
+#fit1.logit1 <- glm(RE ~ data.train$race + data.train$gender + data.train$time_in_hospital + data.train$num_lab_procedures + data.train$num_procedures + data.train$num_medications + data.train$number_diagnoses + data.train$max_glu_serum + data.train$A1Cresult + data.train$metformin + data.train$glimepiride, family=binomial, data=data.train)
+#Anova(fit1.logit1)
+
+#Backwards Selection
+#fit1.logit2 <- glm(RE ~ data.train$race + data.train$time_in_hospital + data.train$num_lab_procedures + data.train$num_procedures + data.train$num_medications + data.train$number_diagnoses + data.train$max_glu_serum + data.train$A1Cresult + data.train$metformin + data.train$glimepiride, family=binomial, data=data.train)
+#Anova(fit1.logit2)
+
+#fit1.logit3 <- glm(RE ~ data.train$race + data.train$time_in_hospital + data.train$num_procedures + data.train$num_medications + data.train$number_diagnoses + data.train$max_glu_serum + data.train$A1Cresult + data.train$metformin + data.train$glimepiride, family=binomial, data=data.train)
+#Anova(fit1.logit3)
+
+#fit1.logit4 <- glm(RE ~ data.train$race + data.train$time_in_hospital + data.train$num_procedures + data.train$num_medications + data.train$number_diagnoses + data.train$max_glu_serum + data.train$A1Cresult + data.train$metformin, family=binomial, data=data.train)
+#Anova(fit1.logit4)
+
+fit1.logit4 <- glm(RE ~ race + time_in_hospital + num_procedures + num_medications + number_diagnoses + A1Cresult + metformin, family=binomial, data=data.train)
+#Anova(fit1.logit4)
+```
+
+```{r, echo = FALSE}
+#Adjust alpha to .9
+fit2.cv <- cv.glmnet(X, Y, alpha=.9, family="binomial", nfolds = 10, type.measure = "auc") 
+
+saveRDS(fit2.cv, '/tmp/fit2.cv.rds')
+fit2.cv.saved <- readRDS('/tmp/fit2.cv.rds')
+
+fit2.cv.coef.1se <- coef(fit2.cv, s="lambda.1se")  
+fit2.cv.coef.1se <- fit2.cv.coef.1se[which(fit2.cv.coef.1se !=0),] 
+
+#fit2.logit1 <- glm(RE ~ data.train$time_in_hospital + data.train$time_in_hospital +  data.train$num_medications + data.train$number_diagnoses + data.train$insulin + data.train$diabetesMed + data.train$disch_disp_modified + data.train$diag1_mod + data.train$diag3_mod + data.train$total_hospital_visits, family=binomial, data=data.train)
+#Anova(fit2.logit1)
+
+fit2.logit2 <- glm(RE ~ time_in_hospital + time_in_hospital +   number_diagnoses + insulin + diabetesMed + disch_disp_modified + diag1_mod + diag3_mod + total_hospital_visits, family=binomial, data=data.train)
+#Anova(fit2.logit2)
+```
+
+```{r, echo = FALSE}
+#Adjust alpha to .8
+fit3.cv <- cv.glmnet(X, Y, alpha=.8, family="binomial", nfolds = 10, type.measure = "auc") 
+
+saveRDS(fit3.cv, '/tmp/fit3.cv.rds')
+fit3.cv.saved <- readRDS('/tmp/fit3.cv.rds')
+
+fit3.cv.coef.1se <- coef(fit3.cv, s="lambda.1se")  
+fit3.cv.coef.1se <- fit3.cv.coef.1se[which(fit3.cv.coef.1se !=0),] 
+
+#fit3.logit1 <- glm(RE ~ data.train$time_in_hospital +  data.train$num_medications + data.train$number_diagnoses + data.train$A1Cresult + data.train$metformin + data.train$insulin + data.train$diabetesMed + data.train$disch_disp_modified + data.train$diag1_mod + data.train$diag2_mod + data.train$diag3_mod + data.train$total_hospital_visits, family=binomial, data=data.train)
+#Anova(fit3.logit1)
+
+fit3.logit2 <- glm(RE ~ time_in_hospital + number_diagnoses + A1Cresult + metformin + insulin + diabetesMed + disch_disp_modified + diag1_mod + diag2_mod + diag3_mod + total_hospital_visits, family=binomial, data=data.train)
+#Anova(fit3.logit2)
+```
+
+Three models were generated on the training data using the elastic net technqiue.  Once these models were created, each model was used to predict the outcomes for the testing data.  Once each model generated predicted values on the testing data, they were compared using the AUC metric.  AUC measures how the model makes the trade-off between specificity (classifying those who were actually readmitted in under 30 days correctly) and false positive rate (when the model predicts the patient will be readmitted in under 30 days, but they weren't in reality).  The AUC value is a simple metric that allows us to summarize the strength of a classifier.  We will use AUC as an initial metric to whittle down to a final model, which we will examine more closely.
+
+The AUC numbers for the three elastic net models are as follows:
+```{r, echo = FALSE}
+#Comparing AUCs
+fit1.fitted.test <- predict(fit1.logit4, newdata = data.test, type="response")
+fit2.fitted.test <- predict(fit2.logit2, newdata = data.test, type="response")
+fit3.fitted.test <- predict(fit3.logit2, newdata = data.test, type="response")
+
+par(mfrow = c(2,2))
+fit1.test.roc <- roc(data.test$RE, fit1.fitted.test, plot=T)
+fit2.test.roc <- roc(data.test$RE, fit2.fitted.test, plot=T)
+fit3.test.roc <- roc(data.test$RE, fit3.fitted.test, plot=T)
+
+auc <- c((auc(fit1.test.roc)), (auc(fit2.test.roc)), (auc(fit3.test.roc)))
+alpha_level <- c(1,.9,.8)
+alpha_roc_comp <- data.frame(alpha_level, auc)
+
+elastic_net_model <- fit3.logit2
+```
+
+```{r}
+alpha_roc_comp
+```
+
+Thus, the elastic net model with alpha level of .8 returns the highest AUC of the three models.  We will take this model, labeled `elastic_net_model`, and compare it's performance to a model generated using a fascinating new technique, the random forest.
+
+The second statistical modeling technique used to generate a candidate model is the random forest.  This technique generates hundreds of bootstrapped decision trees, that each use a random sample of predictors at each level.  After generating the best split based on deviance, further splits are made until a full tree is formed. Following this, the random forest algamates the predictions for each value based on all of the trees, and delivers a prediction for the given inputs.  The random forest is by definiton a black-box evaluator - meaning we cannot see how exactly each prediction is made - but it may generate strong predictions.  We will thus create a random forest model and compare its performance to the `elastic_net_model` generated above.
+
+```{r, echo=FALSE}
+#Building the Forest
+fit_rf_train <- randomForest(RE~.,data.train, mtry=5, ntree=100)
+plot(fit_rf_train)
+predict_rf_yhat <- predict(fit_rf_train, newdata=data.test)
+predict_rf_prob <- predict(fit_rf_train, newdata=data.test, type="prob")
+
+#Testing Error
+testing_mce <- mean(data.test$RE != predict_rf_yhat)
+print(testing_mce)
+roc(data.test$RE, predict_rf_prob[,2], plot=TRUE)
+auc(data.test$RE, predict_rf_prob[,2], plot = TRUE)
+
+random_forest_auc <-auc(data.test$RE, predict_rf_prob[,2])
+```
+
+We then compare the `Random Forest` and `Elastic Net` models based on their AUC for the predictions made on the testing data:
+
+```{r, echo =  FALSE}
+#Choosing between Lasso and Random Forest
+type <- c("Random Forest", "Elastic Net")
+auc_compare <- c(random_forest_auc, (auc(fit3.test.roc)))
+
+final_comparison <- data.frame("Model Type" = type, "AUC" = auc_compare)
+```
+
+```{r}
+final_comparison
+```
+
+The resulting comparison shows the Elastic Net Model slightly outperforms the random forest method in terms of AUC, our metric of choice.  In addition, the elastic net method outputs a model that is clear and easily alterable - the model-generated probability that a given patient will be readmitted in under 30 days is calculated using a clear and concise formula, as opposed to the black-box nature of the Random Forest.  Note that the Elastic Net model is slightly more cumbersome to use in practice. Regardless, the increased performance and transparency makes the Elastic Net model the preferred choice.
+
+The final model consists of eleven factors: `Time in the Hospital`, `Number of Diagnoses`, `A1C Test Result`, `Metformin`, `Insulin`, `Diabetes Medication Prescription`, `Discharge Location`, `Total Hospital Visits`, and the three patient diagnoses, `Diagnosis 1`, `Diagnosis 2`, and `Diagnosis 3`.  Based on this work, these are the factors the hospital can use to predict whether or not a patient will be readmitted in under 30 days.  The full model can be found in the appendix
+
+The final model results in a log-odds ratio of being readmitted, taken as P(Y=1|Patient) = exp(sum(factors*coefficents))/ 1 + exp(sum(factors(coefficients)).
+
+However, knowledge of the significant factors in predicting patient outcomes is not enough.  Now that a final model has been selected, we will examine how to best use the model to predict which patients are at risk for rapid readmission.  Intelligent use of the model is key, as it will allow the hospital to focus on a select group of patients and tailor their care towards these individuals.
+
+Discussion with hospital staff yielded the insight that it costs twice as much to mislabel a readmission (i.e predict a patient will not be readmitted when they will) than to mislabel a non-readmission (i.e predict a patient will get readmitted but they won't).  This estimate is due to new healthcare legislation that penalizes hospitals for allowing patients to be readmitted as well as the overhead costs of re-admitting a patient - assigning a new bed, nursing schedule, and so forth.  This cost ratio is an estimate, of course, but it will be used to create a classification rule - a boundary on the model probability that dictates when a patient should be marked as likely to be readmitted.
+
+In our binary terminology, a "0" is someone who will not be readmitted in under 30 days.  A "1" is someone who will.
+
+Let $a_{1,0}=L(Y=1, \hat Y=0)$, the cost of classifying a "1" as a "0". 
+
+Let $a_{0,1}=L(Y=0, \hat Y=1)$, the loss of classifying a "0" as a "1". 
+
+In order to minimize weighted misclassification error, we reccomend you classify patients as a "1", or a patient who will be readmitted, if $$P(Y=1 \vert x) > \frac{\frac{a_{0,1}}{a_{1,0}}}{1 + \frac{a_{0,1}}{a_{1,0}}}$$, or in other words if $$P(Y=1 \vert x) > \frac{\frac{1}{2}}{1 + \frac{1}{2}} ={\frac{1}{3}}$$
+
+Thus, we recommend that you input patient data into the elastic net model and classify them as patients who will be readmitted if the model determines they have higher than a 1/3 chance of being readmitted.  This will best mitigate the costs associated with misclassification.
+
+```{r}
+#Suggest classification rule
+elasticnet.pred.bayes <- rep("0", 101766 )
+elasticnet.pred.bayes[elastic_net_model$fitted > .33] <- "1" 
+MCE.elasticnet <- (sum(2*(elasticnet.pred.bayes[readmission_forest_data$RE == "1"] != "1")) + sum(elasticnet.pred.bayes[readmission_forest_data$RE == "0"] != "0"))/length(readmission_forest_data$RE)
+MCE.elasticnet
+```
+This results in a final weighted misclassification error, where:
+$$Weighted MCE=\frac{a_{1,0} \sum 1_{\hat y = 0 | y=1} + a_{0,1} \sum 1_{\hat y = 1 | y=0}}{n}=.228$$
+
+# Conclusion
+
+After conducting exploratory data analysis, four prediction models were generated using the Elastic Net and Random Forest tehcniques.  After using logistic regresion techniques to ensure the elastnic net models included only significant variables, these models were compared on the basis of their AUC, a general measure of the model sensitivity/specitifiy tradeoff and accuracy.  Ultimately, the model with the highest AUC was the elastic net model with an alpha of .8 (indicating partial use of a ridge regression).  This final model assigns a given patient a probability of readmission using an assigned formula.
+
+An increase in the following key factors had these effects on the probability of being readmitted:
+
+`time_in_hospital`: Increase                                               
+`number_diagnoses`: Increase                                                 
+`A1Cresult>8`: Decrease                                                      
+`metforminSteady`: Decrease                                                 
+`metforminUp`: Decrease                                                     
+`insulinUp`: Decrease                                                     
+`diabetesMedYes`: Increase                                                  
+`disch_disp_modifiedDischarged to home with Home Health Service`: Increase  
+
+However, the model output probabilities should not be interpreted as probablilites than the patient indeed will be readmitted.  Rather, the model serves as a basis for a classification - the act of labeling patients with a value of "0" - won't be readmitted, or "1" - will be readmitted.  This concrete classification allows the hospital to identify specific patients to target for early intervention, extra hospital time, or increased monitoring post-discharge.  Using an estimated ratio that readmission mislabels are twice as costly an non-readmission mislabels, the recommended classification boundary is `1/3`.  Concretely, this means the hospital should label every patient with a final model-generated probability of readmission higher than `1/3` as a patient predicted to be readmitted, and adjust care as such. 
+
+Conclusions from this drawn model should always be taken in context to patient history, changing conditions, and other difficult-to-measure factors that increase the likelihood of readmission.  That being said, this model is easy to use, relatively parsiminous, and effective.  It is our hope that this model can help alleviate the costs of readmission and lead to diabetes healthcare that works for patients, physicians, hospitals, and insurers.
+
+# Appendix 1: EDA 
+
+```{r, eval=FALSE}
+#Data Summary
+n=101766
+str(readmission)
+class(readmission)
+summary(readmission)
+
+count(readmission, race)
+count(readmission, insulin)
+count(readmission, age_mod)
+
+#Boxplots
+plot(readmission$sub30readmit, readmission$num_medications, ylab = "Number of Medications", xlab = "Readmittance in Under 30 Days")
+
+plot(readmission$sub30readmit, readmission$time_in_hospital, ylab = "Number of Medications", xlab = "Time in Hospital")
+
+plot(readmission$sub30readmit, readmission$num_lab_procedures, ylab = "Number of Lab Procedures", xlab = "Readmittance in Under 30 Days")
+
+hist(readmission$num_medications)
+hist(readmission$num_lab_procedures)
+hist(readmission$number_diagnoses)
+
+#Glucose Boxplot
+readmission %>%
+group_by(insulin) %>%
+  summarise(
+    mean = mean(sub30readmit),
+    n = n()
+  )
+
+plot(readmission$sub30readmit, readmission$num_lab_procedures, ylab = "Number of Lab Procedures", xlab = "Readmittance in Under 30 Days")
+
+```
+
+```{r, eval= FALSE}
+#Should this be categorical? Examine later
+
+plot(readmission$sub30readmit, readmission$total_visits, ylab = "Number of Visits to the Hospital", xlab = "Readmittance in Under 30 Days")
+
+#Table for ICD9 Diagnoses
+#ICD9 Binning?
+
+summary(readmission$number_outpatient)
+```
+
+
+# Appendix 2: Model Generation
+
+```{r, eval= FALSE}
+#Assigning Training/Testing data
+n <- nrow(readmission_forest_data)
+n1 <- (4/5)*n
+
+names(readmission_forest_data)[26] <- "RE"
+train.index <- sample(n, n1,replace=FALSE)
+#length(train.index)
+data.train <- readmission_forest_data[train.index, ]
+data.test <- readmission_forest_data[-train.index, ]
+```
+
+
+```{r, eval=FALSE}
+#Elastic Net Classification
+X <- model.matrix(RE~., data.train)[,-1]
+Y <- data.train[, 26]
+
+fit1.cv <- cv.glmnet(X, Y, alpha=1, family="binomial", nfolds = 10, type.measure = "auc") 
+
+saveRDS(fit1.cv, '/tmp/fit2.cv.rds')
+fit1.cv.saved <- readRDS('/tmp/fit2.cv.rds')
+
+fit1.cv.coef.1se <- coef(fit1.cv, s="lambda.1se")  
+fit1.cv.coef.1se <- fit1.cv.coef.1se[which(fit1.cv.coef.1se !=0),] 
+fit1.cv.coef.1se
+
+#Plugging into lm
+fit1.logit1 <- glm(RE ~ data.train$race + data.train$gender + data.train$time_in_hospital + data.train$num_lab_procedures + data.train$num_procedures + data.train$num_medications + data.train$number_diagnoses + data.train$max_glu_serum + data.train$A1Cresult + data.train$metformin + data.train$glimepiride, family=binomial, data=data.train)
+Anova(fit1.logit1)
+
+#Backwards Selection
+fit1.logit2 <- glm(RE ~ data.train$race + data.train$time_in_hospital + data.train$num_lab_procedures + data.train$num_procedures + data.train$num_medications + data.train$number_diagnoses + data.train$max_glu_serum + data.train$A1Cresult + data.train$metformin + data.train$glimepiride, family=binomial, data=data.train)
+Anova(fit1.logit2)
+
+fit1.logit3 <- glm(RE ~ data.train$race + data.train$time_in_hospital + data.train$num_procedures + data.train$num_medications + data.train$number_diagnoses + data.train$max_glu_serum + data.train$A1Cresult + data.train$metformin + data.train$glimepiride, family=binomial, data=data.train)
+Anova(fit1.logit3)
+
+fit1.logit4 <- glm(RE ~ data.train$race + data.train$time_in_hospital + data.train$num_procedures + data.train$num_medications + data.train$number_diagnoses + data.train$max_glu_serum + data.train$A1Cresult + data.train$metformin, family=binomial, data=data.train)
+Anova(fit1.logit4)
+
+fit1.logit4 <- glm(RE ~ race + time_in_hospital + num_procedures + num_medications + number_diagnoses + A1Cresult + metformin, family=binomial, data=data.train)
+Anova(fit1.logit4)
+```
+
+```{r, eval=FALSE}
+#Adjust alpha to .9
+fit2.cv <- cv.glmnet(X, Y, alpha=.9, family="binomial", nfolds = 10, type.measure = "auc") 
+
+saveRDS(fit2.cv, '/tmp/fit2.cv.rds')
+fit2.cv.saved <- readRDS('/tmp/fit2.cv.rds')
+
+fit2.cv.coef.1se <- coef(fit2.cv, s="lambda.1se")  
+fit2.cv.coef.1se <- fit2.cv.coef.1se[which(fit2.cv.coef.1se !=0),] 
+fit2.cv.coef.1se
+
+fit2.logit1 <- glm(RE ~ data.train$time_in_hospital + data.train$time_in_hospital +  data.train$num_medications + data.train$number_diagnoses + data.train$insulin + data.train$diabetesMed + data.train$disch_disp_modified + data.train$diag1_mod + data.train$diag3_mod + data.train$total_hospital_visits, family=binomial, data=data.train)
+Anova(fit2.logit1)
+
+fit2.logit2 <- glm(RE ~ time_in_hospital + time_in_hospital +   number_diagnoses + insulin + diabetesMed + disch_disp_modified + diag1_mod + diag3_mod + total_hospital_visits, family=binomial, data=data.train)
+Anova(fit2.logit2)
+```
+
+```{r, eval = FALSE}
+#Adjust alpha to .8
+fit3.cv <- cv.glmnet(X, Y, alpha=.8, family="binomial", nfolds = 10, type.measure = "auc") 
+
+saveRDS(fit3.cv, '/tmp/fit3.cv.rds')
+fit3.cv.saved <- readRDS('/tmp/fit3.cv.rds')
+
+fit3.cv.coef.1se <- coef(fit3.cv, s="lambda.1se")  
+fit3.cv.coef.1se <- fit3.cv.coef.1se[which(fit3.cv.coef.1se !=0),] 
+fit3.cv.coef.1se
+
+fit3.logit1 <- glm(RE ~ data.train$time_in_hospital +  data.train$num_medications + data.train$number_diagnoses + data.train$A1Cresult + data.train$metformin + data.train$insulin + data.train$diabetesMed + data.train$disch_disp_modified + data.train$diag1_mod + data.train$diag2_mod + data.train$diag3_mod + data.train$total_hospital_visits, family=binomial, data=data.train)
+Anova(fit3.logit1)
+
+fit3.logit2 <- glm(RE ~ time_in_hospital + number_diagnoses + A1Cresult + metformin + insulin + diabetesMed + disch_disp_modified + diag1_mod + diag2_mod + diag3_mod + total_hospital_visits, family=binomial, data=data.train)
+Anova(fit3.logit2)
+```
+
+
+```{r, eval= FALSE}
+#Comparing AUCs
+fit1.fitted.test <- predict(fit1.logit4, newdata = data.test, type="response")
+fit2.fitted.test <- predict(fit2.logit2, newdata = data.test, type="response")
+fit3.fitted.test <- predict(fit3.logit2, newdata = data.test, type="response")
+
+par(mfrow = c(2,2))
+fit1.test.roc <- roc(data.test$RE, fit1.fitted.test, plot=T)
+fit2.test.roc <- roc(data.test$RE, fit2.fitted.test, plot=T)
+fit3.test.roc <- roc(data.test$RE, fit3.fitted.test, plot=T)
+
+auc <- c((auc(fit1.test.roc)), (auc(fit2.test.roc)), (auc(fit3.test.roc)))
+alpha_level <- c(1,.9,.8)
+alpha_roc_comp <- data.frame(alpha_level, auc)
+
+elastic_net_model <- fit3.logit2
+```
+
+
+
+```{r, eval=FALSE}
+#Building the Forest
+fit_rf_train <- randomForest(RE~.,data.train, mtry=5, ntree=100)
+plot(fit_rf_train)
+predict_rf_yhat <- predict(fit_rf_train, newdata=data.test)
+predict_rf_prob <- predict(fit_rf_train, newdata=data.test, type="prob")
+
+#Testing Error
+testing_mce <- mean(data.test$RE != predict_rf_yhat)
+print(testing_mce)
+roc(data.test$RE, predict_rf_prob[,2], plot=TRUE)
+auc(data.test$RE, predict_rf_prob[,2], plot = TRUE)
+
+random_forest_auc <-auc(data.test$RE, predict_rf_prob[,2])
+```
+
+```{r, eval=FALSE}
+#Choosing between Lasso and Random Forest
+type <- c("Random Forest", "Elastic Net")
+auc_compare <- c(random_forest_auc, (auc(fit3.test.roc)))
+
+final_comparison <- data.frame("Model Type" = type, "AUC" = auc_compare)
+```
+
+# Appendix 3: Final Model
+```{r}
+summary(fit3.logit2)
+```
